@@ -1,1 +1,129 @@
+import re
+import time
 
+
+def normalize_phone(phone):
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    if len(digits) > 10 and digits.startswith("91"):
+        digits = digits[2:]
+    return digits
+
+
+def normalize_name(name):
+    if not name:
+        return "Unknown"
+    cleaned = str(name).lower()
+    cleaned = re.sub(r"\b(dr|mr|mrs|ms|prof)\.?\b", " ", cleaned)
+    cleaned = re.sub(r"[^a-z\s]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.title() if cleaned else "Unknown"
+
+
+def normalize_email(email):
+    if not email:
+        return ""
+    return str(email).strip().lower()
+
+
+def merge_contacts(contacts):
+    # Dictionary keyed by normalized phone number; each value holds:
+    # {"names": set(), "numbers": set(), "emails": set()}
+    merged_by_phone = {}
+    no_phone_records = []
+
+    for record in contacts:
+        raw_name = record.get("name", "")
+        raw_phone = record.get("phone", "")
+        raw_email = record.get("email", "")
+
+        norm_name = normalize_name(raw_name)
+        norm_phone = normalize_phone(raw_phone)
+        norm_email = normalize_email(raw_email)
+
+        if not norm_phone:
+            no_phone_records.append({
+                "names": {norm_name},
+                "numbers": set(),
+                "emails": {norm_email} if norm_email else set(),
+            })
+            continue
+
+        if norm_phone not in merged_by_phone:
+            merged_by_phone[norm_phone] = {
+                "names": {norm_name},
+                "numbers": {norm_phone},
+                "emails": {norm_email} if norm_email else set(),
+            }
+        else:
+            merged_by_phone[norm_phone]["names"].add(norm_name)
+            merged_by_phone[norm_phone]["numbers"].add(norm_phone)
+            if norm_email:
+                merged_by_phone[norm_phone]["emails"].add(norm_email)
+
+    result = list(merged_by_phone.values()) + no_phone_records
+    return result
+
+
+def pairwise_merge_count_only(contacts):
+    # Alternative O(n^2) pairwise comparison for complexity analysis
+    n = len(contacts)
+    comparisons = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            comparisons += 1
+            _ = normalize_phone(contacts[i].get("phone", "")) == normalize_phone(
+                contacts[j].get("phone", "")
+            )
+    return comparisons
+
+
+def hand_verification_demo():
+    sample_contacts = [
+        {"name": "Dr. Ravi", "phone": "+91 98400 12345", "email": "ravi@example.com"},
+        {"name": "ravi kumar", "phone": "9840012345", "email": "R.Kumar@work.org"},
+        {"name": "Ravi K.", "phone": "098400-12345", "email": ""},
+        {"name": "Anitha", "phone": "+919876543210", "email": "anitha@mail.com"},
+        {"name": "NoPhone Person", "phone": "", "email": "nophone@mail.com"},
+    ]
+    merged = merge_contacts(sample_contacts)
+    print("=== HAND VERIFICATION SAMPLE ===")
+    for idx, person in enumerate(merged, start=1):
+        print(
+            "Person", idx,
+            "| Names:", sorted(person["names"]),
+            "| Numbers:", sorted(person["numbers"]),
+            "| Emails:", sorted(person["emails"]),
+        )
+
+
+def benchmark_scale(n):
+    contacts = []
+    for i in range(n):
+        base_id = i % max(1, (n // 2))
+        phone = f"98{base_id:08d}"
+        if i % 3 == 0:
+            phone = "+91 " + phone[:5] + " " + phone[5:]
+        contacts.append({
+            "name": f"Dr. Contact {base_id}" if i % 2 == 0 else f"contact {base_id}",
+            "phone": phone,
+            "email": f"user{base_id}@example.com" if i % 4 != 0 else "",
+        })
+
+    t0 = time.perf_counter()
+    merged = merge_contacts(contacts)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return len(merged), round(elapsed_ms, 3)
+
+
+def main():
+    hand_verification_demo()
+    print("\n=== SCALE BENCHMARK (DICTIONARY O(n) AVERAGE) ===")
+    for size in (1000, 100000):
+        unique_count, ms = benchmark_scale(size)
+        print("Input size:", size, "| Merged records:", unique_count, "| Time (ms):", ms)
+
+
+if __name__ == "__main__":
+    main()
