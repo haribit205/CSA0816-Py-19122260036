@@ -1,1 +1,101 @@
 
+import time
+
+
+# ============================================================
+# ORIGINAL VERSION: Quadratic O(n^2) Sliding-Window Sum
+# (Recomputes the entire k-element window sum from scratch)
+# ============================================================
+def original_sliding_window_max(data, k):
+    n = len(data)
+    if k <= 0 or k > n:
+        raise ValueError("Window size k must be between 1 and len(data).")
+
+    operations = 0
+    max_sum = None
+
+    for i in range(n - k + 1):
+        current_sum = 0
+        for j in range(i, i + k):
+            current_sum += data[j]
+            operations += 1
+        if max_sum is None or current_sum > max_sum:
+            max_sum = current_sum
+
+    return max_sum, operations
+
+
+# ============================================================
+# REDESIGNED VERSION: Linear O(n) Incremental Sliding Window
+# (Exploits overlapping windows: sum_new = sum_old - out + in)
+# ============================================================
+def redesigned_sliding_window_max(data, k):
+    n = len(data)
+    if k <= 0 or k > n:
+        raise ValueError("Window size k must be between 1 and len(data).")
+
+    operations = 0
+    window_sum = 0
+
+    # Initial window of size k
+    for j in range(k):
+        window_sum += data[j]
+        operations += 1
+
+    max_sum = window_sum
+
+    # Slide window one step at a time using O(1) update
+    for i in range(k, n):
+        window_sum = window_sum - data[i - k] + data[i]
+        operations += 2
+        if window_sum > max_sum:
+            max_sum = window_sum
+
+    return max_sum, operations
+
+
+def benchmark(n, k):
+    data = [(i * 7 + 3) % 100 for i in range(n)]
+
+    t0 = time.perf_counter()
+    orig_ans, orig_ops = original_sliding_window_max(data, k)
+    orig_time_ms = (time.perf_counter() - t0) * 1000.0
+
+    t1 = time.perf_counter()
+    red_ans, red_ops = redesigned_sliding_window_max(data, k)
+    red_time_ms = (time.perf_counter() - t1) * 1000.0
+
+    assert orig_ans == red_ans, "Mismatch between original and redesigned outputs!"
+
+    return {
+        "n": n,
+        "k": k,
+        "result": red_ans,
+        "orig_ops": orig_ops,
+        "red_ops": red_ops,
+        "orig_time_ms": round(orig_time_ms, 4),
+        "red_time_ms": round(red_time_ms, 4),
+    }
+
+
+def main():
+    test_configs = [
+        (500, 50),
+        (2000, 200),
+        (10000, 1000),
+        (20000, 2000),
+    ]
+
+    print("N      | K    | MaxSum | Orig_Ops   | Red_Ops | Orig_Time(ms) | Red_Time(ms)")
+    print("-" * 78)
+    for n, k in test_configs:
+        row = benchmark(n, k)
+        print(
+            f"{row['n']:<6} | {row['k']:<4} | {row['result']:<6} | "
+            f"{row['orig_ops']:<10} | {row['red_ops']:<7} | "
+            f"{row['orig_time_ms']:<13} | {row['red_time_ms']:<12}"
+        )
+
+
+if __name__ == "__main__":
+    main()
