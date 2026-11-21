@@ -1,1 +1,171 @@
+import re
+import sqlite3
+import time
 
+POSITIVE = {"good", "clean", "fast", "helpful", "improved"}
+NEGATIVE = {"bad", "dirty", "slow", "rude", "smoke", "broken"}
+NEGATORS = {"not", "never", "no"}
+
+
+def score(text):
+    """+1 per positive word, -1 per negative word; a preceding negator flips it."""
+    words = text.lower().replace(".", " ").replace(",", " ").split()
+    total = 0
+    # TODO 1: For each word, find its value (+1, -1 or 0); if the previous word is a
+    # negator, flip the sign; add it to total
+    for idx, w in enumerate(words):
+        if w in POSITIVE:
+            val = 1
+        elif w in NEGATIVE:
+            val = -1
+        else:
+            val = 0
+
+        if val != 0 and idx > 0 and words[idx - 1] in NEGATORS:
+            val = -val
+
+        total += val
+    return total
+
+
+def label(text):
+    s = score(text)
+    return "positive" if s > 0 else "negative" if s < 0 else "neutral"
+
+
+def summarize_by_keyword_frequency(text, top_k=1):
+    """Pick top_k sentences ranked by frequency of important (non-stopword) words."""
+    stopwords = {
+        "the", "and", "is", "was", "were", "a", "an", "to", "in", "on", "of",
+        "for", "from", "at", "with", "it", "this", "that", "are", "be", "has",
+        "have", "had", "but", "or", "as", "by", "so", "if", "not", "no", "very"
+    }
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+    if not sentences:
+        return ""
+
+    word_counts = {}
+    for w in re.findall(r"[a-z]+", text.lower()):
+        if w not in stopwords and len(w) > 2:
+            word_counts[w] = word_counts.get(w, 0) + 1
+
+    scored = []
+    for idx, sent in enumerate(sentences):
+        tokens = [t for t in re.findall(r"[a-z]+", sent.lower()) if t not in stopwords and len(t) > 2]
+        sent_score = sum(word_counts.get(t, 0) for t in tokens)
+        scored.append((sent_score, idx, sent))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    chosen = [item[2] for item in scored[:top_k]]
+    return ". ".join(chosen) + ("." if chosen else "")
+
+
+def summarize_first_k_sentences(text, k=1):
+    """Alternative summariser: pick the first k sentences."""
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+    chosen = sentences[:k]
+    return ". ".join(chosen) + ("." if chosen else "")
+
+
+def build_50_complaints():
+    templates = [
+        ("Roads are clean and the bus was fast.", "positive"),
+        ("Smoke from the factory, air is bad.", "negative"),
+        ("The staff were not helpful.", "negative"),
+        ("Not bad, service improved.", "positive"),
+        ("Station is dirty and platform is broken.", "negative"),
+        ("Ticket counter was fast and staff were helpful.", "positive"),
+        ("Bus was slow and never clean.", "negative"),
+        ("Not clean, water leaked near gate.", "negative"),
+        ("Service improved and station looks good.", "positive"),
+        ("Heavy smoke near depot, air feels bad.", "negative"),
+    ]
+    complaints = []
+    for i in range(50):
+        txt, human_lbl = templates[i % len(templates)]
+        station = f"STN_{(i % 15) + 1:03d}"
+        day = f"2026-11-{(i % 28) + 1:02d}"
+        complaints.append((i + 1, station, day, txt, human_lbl))
+    return complaints
+
+
+def run_sentiment_and_summary_eval(complaints):
+    agree = 0
+    t0 = time.perf_counter()
+    for _, _, _, txt, human_lbl in complaints:
+        pred = label(txt)
+        if pred == human_lbl:
+            agree += 1
+        _ = summarize_by_keyword_frequency(txt, top_k=1)
+    kw_ms = (time.perf_counter() - t0) * 1000.0
+
+    t1 = time.perf_counter()
+    for _, _, _, txt, _ in complaints:
+        _ = summarize_first_k_sentences(txt, k=1)
+    first_k_ms = (time.perf_counter() - t1) * 1000.0
+
+    return agree, len(complaints), round(kw_ms, 4), round(first_k_ms, 4)
+
+
+def benchmark_db_index(num_rows=10000):
+    conn = sqlite3.connect(":memory:")
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE complaints (id INTEGER PRIMARY KEY, station TEXT, day TEXT, message TEXT)"
+    )
+    rows = [
+        (i, f"STN_{(i % 120) + 1:03d}", f"2026-11-{(i % 30) + 1:02d}", f"Sample complaint message {i}")
+        for i in range(1, num_rows + 1)
+    ]
+    cur.executemany("INSERT INTO complaints VALUES (?, ?, ?, ?)", rows)
+    conn.commit()
+
+    query = "SELECT COUNT(*) FROM complaints WHERE station = ? AND day = ?"
+    params = ("STN_045", "2026-11-15")
+
+    t0 = time.perf_counter()
+    for _ in range(200):
+        cur.execute(query, params).fetchone()
+    without_idx_ms = (time.perf_counter() - t0) * 1000.0
+
+    cur.execute("CREATE INDEX idx_station_day ON complaints (station, day)")
+    conn.commit()
+
+    t1 = time.perf_counter()
+    for _ in range(200):
+        cur.execute(query, params).fetchone()
+    with_idx_ms = (time.perf_counter() - t1) * 1000.0
+
+    conn.close()
+    return round(without_idx_ms, 4), round(with_idx_ms, 4)
+
+
+def main():
+    print("=== SAMPLE SCORER CHECK ===")
+    for c in [
+        "Roads are clean and the bus was fast.",
+        "Smoke from the factory, air is bad.",
+        "The staff were not helpful.",
+        "Not bad, service improved.",
+    ]:
+        print(f"{label(c):8} | {c}")
+
+    print("\n=== WRONG-LABEL EXAMPLE ===")
+    tricky = "Not a bad station, though smoke was bad earlier."
+    print(f"Text: {tricky} -> scorer={label(tricky)} (score={score(tricky)})")
+
+    complaints = build_50_complaints()
+    agree, total, kw_ms, first_k_ms = run_sentiment_and_summary_eval(complaints)
+    print(f"\n=== 50 COMPLAINTS EVALUATION ===")
+    print(f"Agreement with human labels: {agree}/{total}")
+    print(f"Keyword-freq summariser time (50 items): {kw_ms} ms")
+    print(f"First-k summariser time (50 items)     : {first_k_ms} ms")
+
+    no_idx_ms, idx_ms = benchmark_db_index(num_rows=10000)
+    print(f"\n=== DB INDEX BENCHMARK (200 runs on 10,000 rows) ===")
+    print(f"Without index (station, day): {no_idx_ms} ms")
+    print(f"With index    (station, day): {idx_ms} ms")
+
+
+if __name__ == "__main__":
+    main()
