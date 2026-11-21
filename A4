@@ -1,1 +1,179 @@
+import os
+import re
+import time
 
+
+def is_valid_email(email):
+    cleaned = email.strip()
+    if not cleaned or " " in cleaned:
+        return False
+    if cleaned.count("@") != 1:
+        return False
+    local, domain = cleaned.split("@")
+    if not local or not domain or "." not in domain:
+        return False
+    if domain.startswith(".") or domain.endswith(".") or ".." in domain:
+        return False
+    return True
+
+
+def parse_and_validate_line(raw_line, source_file, line_no):
+    line = raw_line.strip()
+    if not line:
+        return None, f"{source_file}:{line_no} -> Empty line skipped"
+
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 5:
+        return None, f"{source_file}:{line_no} -> Damaged line (expected >=5 fields): {line}"
+
+    reg_no = parts[0].upper()
+    name = parts[1]
+    dept = parts[2].upper()
+    email = parts[3]
+    events_raw = ",".join(parts[4:])
+
+    if not reg_no or not name or not dept:
+        return None, f"{source_file}:{line_no} -> Missing required field (reg/name/dept): {line}"
+
+    if not is_valid_email(email):
+        return None, f"{source_file}:{line_no} -> Invalid email '{email}' for reg_no {reg_no}"
+
+    events = [ev.strip().title() for ev in events_raw.split(";") if ev.strip()]
+    if not events:
+        return None, f"{source_file}:{line_no} -> No valid events listed for reg_no {reg_no}"
+
+    record = {
+        "reg_no": reg_no,
+        "name": name.title(),
+        "dept": dept,
+        "email": email.strip().lower(),
+        "events": events,
+    }
+    return record, None
+
+
+def process_registrations(input_files, output_dir="fest_output"):
+    os.makedirs(output_dir, exist_ok=True)
+
+    seen_reg_nos = set()
+    master_records = []
+    event_participants = {}
+    error_logs = []
+
+    files_processed = 0
+    missing_files = 0
+    total_lines_read = 0
+    duplicate_count = 0
+
+    for file_path in input_files:
+        try:
+            with open(file_path, "r", encoding="utf-8") as fh:
+                files_processed += 1
+                for line_no, raw_line in enumerate(fh, start=1):
+                    total_lines_read += 1
+                    record, err_msg = parse_and_validate_line(raw_line, file_path, line_no)
+                    if err_msg is not None:
+                        error_logs.append(err_msg)
+                        continue
+
+                    reg_no = record["reg_no"]
+                    if reg_no in seen_reg_nos:
+                        duplicate_count += 1
+                        error_logs.append(
+                            f"{file_path}:{line_no} -> Duplicate registration ignored for reg_no {reg_no}"
+                        )
+                        continue
+
+                    seen_reg_nos.add(reg_no)
+                    master_records.append(record)
+
+                    for ev in record["events"]:
+                        if ev not in event_participants:
+                            event_participants[ev] = []
+                        event_participants[ev].append(record)
+
+        except OSError as exc:
+            missing_files += 1
+            error_logs.append(f"{file_path}:0 -> File error ({exc.__class__.__name__}): {exc}")
+
+    master_path = os.path.join(output_dir, "master_list.txt")
+    with open(master_path, "w", encoding="utf-8") as mf:
+        for rec in master_records:
+            ev_str = "; ".join(rec["events"])
+            mf.write(f"{rec['reg_no']} | {rec['name']} | {rec['dept']} | {rec['email']} | {ev_str}\n")
+
+    events_dir = os.path.join(output_dir, "events")
+    os.makedirs(events_dir, exist_ok=True)
+    for ev_name, participants in sorted(event_participants.items()):
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", ev_name).strip("_").lower() + ".txt"
+        ev_path = os.path.join(events_dir, safe_name)
+        with open(ev_path, "w", encoding="utf-8") as ef:
+            ef.write(f"Event: {ev_name}\n")
+            ef.write("-" * 40 + "\n")
+            for p in participants:
+                ef.write(f"{p['reg_no']} | {p['name']} | {p['dept']} | {p['email']}\n")
+
+    error_log_path = os.path.join(output_dir, "error_log.txt")
+    with open(error_log_path, "w", encoding="utf-8") as elf:
+        for err in error_logs:
+            elf.write(err + "\n")
+
+    summary_path = os.path.join(output_dir, "summary_report.txt")
+    summary_lines = [
+        "COLLEGE FEST REGISTRATION SUMMARY",
+        "=================================",
+        f"Input files requested : {len(input_files)}",
+        f"Files processed       : {files_processed}",
+        f"Missing/failed files  : {missing_files}",
+        f"Total lines read      : {total_lines_read}",
+        f"Valid unique entries  : {len(master_records)}",
+        f"Duplicates skipped    : {duplicate_count}",
+        f"Errors / warnings     : {len(error_logs)}",
+        f"Distinct events       : {len(event_participants)}",
+    ]
+    with open(summary_path, "w", encoding="utf-8") as sf:
+        sf.write("\n".join(summary_lines) + "\n")
+
+    return {
+        "master": master_records,
+        "events": event_participants,
+        "errors": error_logs,
+        "summary": "\n".join(summary_lines),
+    }
+
+
+def demonstrate_test_cases():
+    sample_dir = "fest_sample_inputs"
+    os.makedirs(sample_dir, exist_ok=True)
+
+    dept1_path = os.path.join(sample_dir, "cse.txt")
+    dept2_path = os.path.join(sample_dir, "ece.txt")
+    missing_path = os.path.join(sample_dir, "mech_missing.txt")
+
+    with open(dept1_path, "w", encoding="utf-8") as f1:
+        f1.write("REG101, arjun kumar, CSE, arjun.k@college.edu, Debate; Quiz\n")
+        f1.write("reg101, Arjun Kumar, CSE, arjun.k@college.edu, Quiz\n")
+        f1.write("REG102, Priya Nair, CSE, priya.nair.college.edu, Dance\n")
+
+    with open(dept2_path, "w", encoding="utf-8") as f2:
+        f2.write("REG103, Karthik R, ECE, karthik@ece.org, Coding; Debate\n")
+        f2.write("REG104, Damaged Line Only Two Fields\n")
+
+    input_list = [dept1_path, dept2_path, missing_path]
+
+    t0 = time.perf_counter()
+    outcome = process_registrations(input_list, output_dir="fest_demo_output")
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    print(outcome["summary"])
+    print(f"Execution time        : {elapsed_ms:.3f} ms\n")
+    print("--- ERROR LOG ---")
+    for e in outcome["errors"]:
+        print(e)
+    print("\n--- CLEAN MASTER LIST ---")
+    for r in outcome["master"]:
+        print(r["reg_no"], r["name"], r["dept"], r["email"], r["events"])
+
+
+if __name__ == "__main__":
+    demonstrate_test_cases()
